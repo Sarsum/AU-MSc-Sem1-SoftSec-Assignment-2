@@ -1,0 +1,125 @@
+
+name: Security Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Semgrep - ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [chatgpt, claude, gemini, local]
+        language: [javascript, python]
+        stage: [stage1, stage2, stage3]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config auto \
+            --sarif \
+            --output semgrep.sarif \
+            ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+
+      - name: Upload SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-${{ matrix.provider }}-${{ matrix.language }}-${{ matrix.stage }}
+          path: semgrep.sarif
+          if-no-files-found: ignore
+
+
+  codeql:
+    name: CodeQL - ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [chatgpt, claude, gemini, local]
+        language: [javascript, python]
+        stage: [stage1, stage2, stage3]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language == 'javascript' && 'javascript' || 'python' }}
+          source-root: ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+          output: ${{ runner.temp }}/codeql-results
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+
+      - name: Archive CodeQL report
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-${{ matrix.provider }}-${{ matrix.language }}-${{ matrix.stage }}
+          path: ${{ runner.temp }}/codeql-results/
+
+
+  dependency-audit:
+    name: Dependency Audit - ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [chatgpt, claude, gemini, local]
+        language: [javascript, python]
+        stage: [stage1, stage2, stage3]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        if: matrix.language == 'javascript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: npm audit
+        if: matrix.language == 'javascript'
+        working-directory: ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+        run: |
+          npm install --package-lock-only
+          npm audit --audit-level=low --json > npm-audit.json
+
+      - name: pip audit
+        if: matrix.language == 'python'
+        working-directory: ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}
+        run: |
+          python -m pip install pip-audit
+          pip-audit --format json --output pip-audit.json
+
+      - name: Upload dependency audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-${{ matrix.provider }}-${{ matrix.language }}-${{ matrix.stage }}
+          path: |
+            ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}/npm-audit.json
+            ${{ matrix.provider }}/${{ matrix.language }}/${{ matrix.stage }}/pip-audit.json
+          if-no-files-found: warn
+          retention-days: 90
